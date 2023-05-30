@@ -1,0 +1,7 @@
+<launch>
+  <node pkg="apriltag_ros" exec="apriltag_node" name="apriltag_node" output='screen'>
+    <remap from="image_rect" to="/typhoon_h480/flow_camera/image_raw"/>
+    <remap from="camera_info" to="/typhoon_h480/flow_camera/camera_info"/>
+    <parameters>
+  </node>
+</launch>

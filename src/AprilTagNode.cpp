@@ -6,6 +6,8 @@
 #else
 #include <cv_bridge/cv_bridge.h>
 #endif
+#include <opencv2/highgui/highgui.hpp>
+
 #include <image_transport/camera_subscriber.hpp>
 #include <image_transport/image_transport.hpp>
 #include <rclcpp/rclcpp.hpp>
@@ -13,12 +15,15 @@
 #include <sensor_msgs/msg/camera_info.hpp>
 #include <sensor_msgs/msg/image.hpp>
 #include <tf2_ros/transform_broadcaster.h>
+#include <geometry_msgs/msg/pose_stamped.hpp>
 
 // apriltag
 #include "tag_functions.hpp"
 #include <apriltag.h>
 
 #include <Eigen/Dense>
+
+#include <vector>
 
 
 #define IF(N, V) \
@@ -114,11 +119,13 @@ private:
     std::atomic<bool> profile;
     std::unordered_map<int, std::string> tag_frames;
     std::unordered_map<int, double> tag_sizes;
+    std::unordered_map<int, std::string> tag_families;
 
     std::function<void(apriltag_family_t*)> tf_destructor;
 
     const image_transport::CameraSubscriber sub_cam;
     const rclcpp::Publisher<apriltag_msgs::msg::AprilTagDetectionArray>::SharedPtr pub_detections;
+    const rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pub_pose;
     tf2_ros::TransformBroadcaster tf_broadcaster;
 
     void onCamera(const sensor_msgs::msg::Image::ConstSharedPtr& msg_img, const sensor_msgs::msg::CameraInfo::ConstSharedPtr& msg_ci);
@@ -137,6 +144,7 @@ AprilTagNode::AprilTagNode(const rclcpp::NodeOptions& options)
     // topics
     sub_cam(image_transport::create_camera_subscription(this, "image_rect", std::bind(&AprilTagNode::onCamera, this, std::placeholders::_1, std::placeholders::_2), declare_parameter("image_transport", "raw", descr({}, true)), rmw_qos_profile_sensor_data)),
     pub_detections(create_publisher<apriltag_msgs::msg::AprilTagDetectionArray>("detections", rclcpp::QoS(1))),
+    pub_pose(create_publisher<geometry_msgs::msg::PoseStamped>("pose", rclcpp::QoS(1))),
     tf_broadcaster(this)
 {
     // read-only parameters
@@ -182,6 +190,8 @@ AprilTagNode::AprilTagNode(const rclcpp::NodeOptions& options)
     else {
         throw std::runtime_error("Unsupported tag family: " + tag_family);
     }
+
+    
 }
 
 AprilTagNode::~AprilTagNode()
@@ -195,6 +205,8 @@ void AprilTagNode::onCamera(const sensor_msgs::msg::Image::ConstSharedPtr& msg_i
 {
     // precompute inverse projection matrix
     const Mat3 Pinv = Eigen::Map<const Eigen::Matrix<double, 3, 4, Eigen::RowMajor>>(msg_ci->p.data()).leftCols<3>().inverse();
+
+    std::cout<<"p: "<<std::endl<<Eigen::Map<const Eigen::Matrix<double, 3, 4, Eigen::RowMajor>>(msg_ci->p.data())<<std::endl;
 
     // convert to 8bit monochrome image
     const cv::Mat img_uint8 = cv_bridge::toCvShare(msg_img, "mono8")->image;
@@ -218,7 +230,7 @@ void AprilTagNode::onCamera(const sensor_msgs::msg::Image::ConstSharedPtr& msg_i
         apriltag_detection_t* det;
         zarray_get(detections, i, &det);
 
-        RCLCPP_DEBUG(get_logger(),
+        RCLCPP_INFO(get_logger(),
                      "detection %3d: id (%2dx%2d)-%-4d, hamming %d, margin %8.3f\n",
                      i, det->family->nbits, det->family->h, det->id,
                      det->hamming, det->decision_margin);
@@ -228,6 +240,29 @@ void AprilTagNode::onCamera(const sensor_msgs::msg::Image::ConstSharedPtr& msg_i
 
         // reject detections with more corrected bits than allowed
         if(det->hamming > max_hamming) { continue; }
+
+        // draw result
+        cv::Mat result = img_uint8.clone();
+
+        for (auto pixel : det->p){
+            cv::Point p(pixel[0], pixel[1]);
+            cv::circle(result, p, 2, cv::Scalar(100), -1);
+        }
+
+        cv::Point p(det->c[0], det->c[1]);
+        cv::circle(result, p, 2, cv::Scalar(100,0,0), -1);
+        
+        cv::imshow("rgb_view", result);
+        cv::waitKey(10);
+
+        // 3D orientation and position
+        geometry_msgs::msg::TransformStamped tf;
+        tf.header = msg_img->header;
+        // set child frame name by generic tag name or configured tag name
+        tf.child_frame_id = tag_frames.count(det->id) ? tag_frames.at(det->id) : std::string(det->family->name) + ":" + std::to_string(det->id);
+        getPose(*(det->H), Pinv, tf.transform, tag_sizes.count(det->id) ? tag_sizes.at(det->id) : tag_edge_size);
+
+        tfs.push_back(tf);
 
         // detection
         apriltag_msgs::msg::AprilTagDetection msg_detection;
@@ -239,16 +274,11 @@ void AprilTagNode::onCamera(const sensor_msgs::msg::Image::ConstSharedPtr& msg_i
         msg_detection.centre.y = det->c[1];
         std::memcpy(msg_detection.corners.data(), det->p, sizeof(double) * 8);
         std::memcpy(msg_detection.homography.data(), det->H->data, sizeof(double) * 9);
+        msg_detection.pose.position.x = tf.transform.translation.x;
+        msg_detection.pose.position.y = tf.transform.translation.y;
+        msg_detection.pose.position.z = tf.transform.translation.z;
+        msg_detection.pose.orientation = tf.transform.rotation;
         msg_detections.detections.push_back(msg_detection);
-
-        // 3D orientation and position
-        geometry_msgs::msg::TransformStamped tf;
-        tf.header = msg_img->header;
-        // set child frame name by generic tag name or configured tag name
-        tf.child_frame_id = tag_frames.count(det->id) ? tag_frames.at(det->id) : std::string(det->family->name) + ":" + std::to_string(det->id);
-        getPose(*(det->H), Pinv, tf.transform, tag_sizes.count(det->id) ? tag_sizes.at(det->id) : tag_edge_size);
-
-        tfs.push_back(tf);
     }
 
     pub_detections->publish(msg_detections);
