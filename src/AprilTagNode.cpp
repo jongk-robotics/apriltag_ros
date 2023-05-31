@@ -242,18 +242,18 @@ void AprilTagNode::onCamera(const sensor_msgs::msg::Image::ConstSharedPtr& msg_i
         if(det->hamming > max_hamming) { continue; }
 
         // draw result
-        cv::Mat result = img_uint8.clone();
+        // cv::Mat result = img_uint8.clone();
 
-        for (auto pixel : det->p){
-            cv::Point p(pixel[0], pixel[1]);
-            cv::circle(result, p, 2, cv::Scalar(100), -1);
-        }
+        // for (auto pixel : det->p){
+        //     cv::Point p(pixel[0], pixel[1]);
+        //     cv::circle(result, p, 2, cv::Scalar(100), -1);
+        // }
 
-        cv::Point p(det->c[0], det->c[1]);
-        cv::circle(result, p, 2, cv::Scalar(100,0,0), -1);
+        // cv::Point p(det->c[0], det->c[1]);
+        // cv::circle(result, p, 2, cv::Scalar(100,0,0), -1);
         
-        cv::imshow("rgb_view", result);
-        cv::waitKey(10);
+        // cv::imshow("rgb_view", result);
+        // cv::waitKey(10);
 
         // 3D orientation and position
         geometry_msgs::msg::TransformStamped tf;
